@@ -11,6 +11,7 @@ nheads = 3
 warmup = 500
 seq_len = expr_size + res_size
 batch_size = 512
+learning_rate = 6.0f-4
 
 dev = gpu_device()
 
@@ -81,15 +82,15 @@ end
 """
 bias, scale の重みのWeightDecayを再帰的に0にする
 """
-function set_weightdecay(t)
+function set_weightdecay(t, learning_rate)
     chache = (;)
     for k in keys(t)
         if t[k] isa Optimisers.Leaf
             if k == :bias || k == :scale
-                chache = merge_recursive(chache, (; k => Optimisers.Leaf(OptimiserChain(Adam(0.0, (0.9, 0.95), 1.0e-8), WeightDecay(0)), t[k].state,)),)
+                chache = merge_recursive(chache, (; k => Optimisers.Leaf(OptimiserChain(Adam(learning_rate, (0.9, 0.95), 1.0e-8), WeightDecay(0)), t[k].state,)),)
             end
         else
-            chache = merge_recursive(chache, (; k => set_weightdecay(t[k])))
+            chache = merge_recursive(chache, (; k => set_weightdecay(t[k], learning_rate)))
         end
     end
     chache
@@ -99,7 +100,7 @@ function crossentropy(y, ŷ)
     return mean(-sum(y .* logsoftmax(ŷ), dims=1))
 end
 
-create_optim(learning_rate, ps) = Optimisers.setup(Optimisers.AdamW(learning_rate, (0.9, 0.95), 6.0f-4 * 0.1), ps)
+create_optim(learning_rate, ps) = Optimisers.setup(Optimisers.AdamW(learning_rate, (0.9, 0.95), learning_rate * 0.1), ps)
 
 mutable struct Model
     model
@@ -211,8 +212,8 @@ function training()
     model, ps, st = create_decoder()
     display(model)
     ps, st = (ps, st) .|> dev
-    optim = create_optim(6.0f-4, ps)
-    optim = merge_recursive(optim, set_weightdecay(optim))
+    optim = create_optim(learning_rate, ps)
+    optim = merge_recursive(optim, set_weightdecay(optim, learning_rate))
     model = Model(model, ps, st)
     iter = ProgressBar(1:3000)
     train_acc_list = Float64[]
