@@ -26,7 +26,7 @@ function batch_predict(model, ps, st, data, batch_size)
     cpu = cpu_device()
     x, mask = data
 
-    n = size(x, 3) 
+    n = size(x, 3)
     num_batches = ceil(Int, n / batch_size)
     responses = []
 
@@ -39,6 +39,7 @@ function batch_predict(model, ps, st, data, batch_size)
 
         response_batch, _ = model((x_batch, mask_batch), ps, st) |> cpu
         push!(responses, response_batch)
+        GC.gc(false)
     end
 
     return hcat(responses...)

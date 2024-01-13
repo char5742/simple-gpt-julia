@@ -86,9 +86,141 @@ function (m::Decoder)((x, mask), ps, st)
 
     (x, _), st_blocks = m.blocks((x, mask), ps.blocks, st.blocks)
 
-    x = flatten(x)
     output, st_out = m.output(x, ps.output, st.output)
     # output = (token_size, seq_len, batch_size)
     st = merge(st, (blocks=st_blocks, output=st_out))
     return output, st
+end
+
+function TransformerBlock(features,  nheads)
+   Chain(
+    DecoderBlock(
+        MultiHeadAttention(
+            Dense(features => features),
+            Dense(features => features),
+            Dense(features => features),
+            Dropout(0.1),
+            Dense(features => features),
+            nheads
+        ),
+        LayerNorm((features, 1)),
+        Chain(Dense(features => features * 4, gelu), Dense(features * 4 => features), Dropout(0.1)),
+        Dropout(0.1),
+        LayerNorm((features, 1))
+    )
+   )
+end
+
+struct MLPDecoder <: Lux.LuxCore.AbstractExplicitContainerLayer{(:embedding, :positional_encoding, :blocks, :output)}
+    embedding
+    positional_encoding
+    blocks
+    output
+end
+
+function (m::MLPDecoder)((x, _), ps, st)
+    # x = (token_size, seq_len, batch_size)
+    x, _ = m.embedding(x, ps.embedding, st.embedding)
+    x, _ = m.positional_encoding(x, ps.positional_encoding, st.positional_encoding)
+    # x = (features, seq_len, batch_size)
+
+    x, st_blocks = m.blocks(x, ps.blocks, st.blocks)
+
+    output, st_out = m.output(x, ps.output, st.output)
+    # output = (token_size, seq_len, batch_size)
+    st = merge(st, (blocks=st_blocks, output=st_out))
+    return output, st
+end
+
+
+
+function MLPMixierBlock(features, seq_len)
+    token_mixier = Chain(
+        LayerNorm((features, seq_len)),
+        WrappedFunction(x -> permutedims(x, (2, 1, 3))),
+        Dense(seq_len => 4seq_len),
+        gelu,
+        Dense(4seq_len => seq_len),
+        WrappedFunction(x -> permutedims(x, (2, 1, 3))),)
+    channel_mixier = Chain(
+        LayerNorm((features, seq_len)),
+        Dense(features => 4features),
+        gelu,
+        Dense(4features => features),
+    )
+    Chain(SkipConnection(token_mixier, +), SkipConnection(channel_mixier, +))
+end
+
+function gMLPMixierBlock(features, seq_len)
+    block = Chain(
+        LayerNorm((features, seq_len)),
+        BranchLayer(
+            Dense(features => features * 3, gelu),
+            Dense(features => features * 3, gelu),
+        ),
+        Parallel(
+            .*,
+            Chain(
+                LayerNorm((features * 3, seq_len)),
+                WrappedFunction(x -> permutedims(x, (2, 1, 3))),
+                Dense(seq_len => seq_len; init_bias=ones32),
+                WrappedFunction(x -> permutedims(x, (2, 1, 3))),
+            ),
+            NoOpLayer(),
+        ),
+        Dense(features * 3 => features),
+    )
+
+    SkipConnection(block, +)
+end
+
+function aMLPMixierBlock(features, seq_len)
+    tiny_attention = Chain(
+        BranchLayer(
+            BranchLayer(
+                Dense(features => features),
+                Dense(features => features),
+            ),
+            NoOpLayer(),
+        ),
+        Parallel(
+           (a,b)-> ein"mnb,dmb -> dnb"(a,b),
+            Chain(
+                Parallel(
+                   (a,b)-> ein"dnb,dmb -> mnb"(a,b),
+                    NoOpLayer(),
+                    NoOpLayer(),
+                ),
+                WrappedFunction(x -> softmax(x ./ √features)),
+            ),
+            NoOpLayer(),
+        ),
+        Dense(features => 2features),
+    )
+    block = Chain(
+        LayerNorm((features, seq_len)),
+        BranchLayer(
+            Dense(features => features * 2, gelu),
+            BranchLayer(
+                Dense(features => features * 2, gelu),
+                Dense(features => features, gelu),
+            ),
+        ),
+        Parallel(
+            .*,
+            NoOpLayer(),
+            Parallel(.+,
+                Chain(
+                    LayerNorm((features * 2, seq_len)),
+                    WrappedFunction(x -> permutedims(x, (2, 1, 3))),
+                    Dense(seq_len => seq_len; init_bias=ones32),
+                    WrappedFunction(x -> permutedims(x, (2, 1, 3))),
+                ),
+                tiny_attention,
+            ),
+        ),
+        Dense(features * 2 => features),
+    )
+
+    SkipConnection(block, +)
 end

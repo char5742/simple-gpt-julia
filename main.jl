@@ -1,6 +1,6 @@
 
 using Lux, LuxCUDA, Random, Zygote, MLUtils, Optimisers, ProgressBars, Printf, JLD2, StatsBase, NamedTupleTools, Plots
-
+using OMEinsum
 include("math.jl")
 include("utils.jl")
 include("layers.jl")
@@ -25,30 +25,39 @@ function create_mask(x)
 end
 
 
-function create_decoder()
+function create_decoder_transformer()
     matrix_size = length(instances(MathToken))
     rng = Random.default_rng()
     model = Decoder(
         Dense(matrix_size => features),
         PositionalEncodingLayer(features, seq_len),
         Chain([
-            DecoderBlock(
-                MultiHeadAttention(
-                    Dense(features => features),
-                    Dense(features => features),
-                    Dense(features => features),
-                    Dropout(0.1),
-                    Dense(features => features),
-                    nheads
-                ),
-                LayerNorm((features, 1)),
-                Chain(Dense(features => features * 4, gelu), Dense(features * 4 => features), Dropout(0.1)),
-                Dropout(0.1),
-                LayerNorm((features, 1))
-            )
+            TransformerBlock(features, nheads)
             for i in 1:3
         ]),
+        Chain(
+           FlattenLayer(),
         Dense(features * seq_len => matrix_size),
+        ),
+    )
+    ps, st = Lux.LuxCore.setup(rng, model)
+    return model, ps, st
+end
+
+function create_decoder_mlp()
+    matrix_size = length(instances(MathToken))
+    rng = Random.default_rng()
+    model = MLPDecoder(
+        Dense(matrix_size => features),
+        PositionalEncodingLayer(features, seq_len),
+        Chain([
+            MLPMixierBlock(features, seq_len)
+            for i in 1:3
+        ]),
+        Chain(
+           FlattenLayer(),
+        Dense(features * seq_len => matrix_size),
+        ),
     )
     ps, st = Lux.LuxCore.setup(rng, model)
     return model, ps, st
@@ -209,7 +218,7 @@ function training()
     test_y = hcat([b[2] for b in test_data]...)
 
     matrix_size = length(instances(MathToken))
-    model, ps, st = create_decoder()
+    model, ps, st = create_decoder_transformer()
     display(model)
     ps, st = (ps, st) .|> dev
     optim = create_optim(learning_rate, ps)
@@ -243,6 +252,7 @@ function training()
             optim, ps = Optimisers.update(optim, ps, gs)
             model.st = st
             model.ps = ps
+            GC.gc(false)
         end
         trainingloss /= num_batches
         test_acc = evaluate_bacth(model.model, model.ps, model.st, test_x, test_y)
