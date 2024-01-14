@@ -163,7 +163,7 @@ function gMLPMixierBlock(features, seq_len)
             Chain(
                 LayerNorm((features * 3, seq_len)),
                 WrappedFunction(x -> permutedims(x, (2, 1, 3))),
-                Dense(seq_len => seq_len; init_bias=ones32),
+                Dense(seq_len => seq_len;init_weight=zeros32, init_bias=ones32),
                 WrappedFunction(x -> permutedims(x, (2, 1, 3))),
             ),
             NoOpLayer(),
@@ -184,10 +184,12 @@ function aMLPMixierBlock(features, seq_len)
             NoOpLayer(),
         ),
         Parallel(
-           (a,b)-> ein"mnb,dmb -> dnb"(a,b),
+            # (a,b)-> ein"mnb,dmb -> dnb"(a,b),
+            (a,b)->batched_mul(b,a), 
             Chain(
                 Parallel(
-                   (a,b)-> ein"dnb,dmb -> mnb"(a,b),
+                #    (a,b)-> ein"dnb,dmb -> mnb"(a,b),
+                (a, b) -> batched_mul(permutedims(b, (2, 1, 3)), a),
                     NoOpLayer(),
                     NoOpLayer(),
                 ),

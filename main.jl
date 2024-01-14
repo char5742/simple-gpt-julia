@@ -6,12 +6,13 @@ include("utils.jl")
 include("layers.jl")
 expr_size = 14
 res_size = 5
-features = 48
-nheads = 3
-warmup = 500
+features = 128
+nheads = 8
 seq_len = expr_size + res_size
-batch_size = 512
-learning_rate = 6.0f-4
+batch_size_scale = 4
+batch_size = 512 * batch_size_scale
+learning_rate = 6.0f-4 * batch_size_scale
+layers = 6
 
 dev = gpu_device()
 
@@ -33,11 +34,11 @@ function create_decoder_transformer()
         PositionalEncodingLayer(features, seq_len),
         Chain([
             TransformerBlock(features, nheads)
-            for i in 1:3
+            for i in 1:layers
         ]),
         Chain(
-           FlattenLayer(),
-        Dense(features * seq_len => matrix_size),
+            FlattenLayer(),
+            Dense(features * seq_len => matrix_size),
         ),
     )
     ps, st = Lux.LuxCore.setup(rng, model)
@@ -49,14 +50,15 @@ function create_decoder_mlp()
     rng = Random.default_rng()
     model = MLPDecoder(
         Dense(matrix_size => features),
-        PositionalEncodingLayer(features, seq_len),
+        NoOpLayer(),
         Chain([
             MLPMixierBlock(features, seq_len)
-            for i in 1:3
+            for i in 1:layers
         ]),
         Chain(
-           FlattenLayer(),
-        Dense(features * seq_len => matrix_size),
+            GlobalMeanPool(),
+            FlattenLayer(),
+            Dense(seq_len => matrix_size),
         ),
     )
     ps, st = Lux.LuxCore.setup(rng, model)
@@ -186,7 +188,6 @@ function evaluate_bacth(model, ps, st, x, y)
     ps, st = (ps, st) .|> dev
     success_count = 0
 
-    batch_size = 512
     res = batch_predict(model, ps, st, (onehotbacth(x), create_mask(x)), batch_size)
     _, predicted = findmax(res, dims=1)
     for i in 1:datasize
@@ -206,7 +207,7 @@ end
 
 function training()
     rng = Random.MersenneTwister(1234)
-    exprs = enumerate_simple_exprs(2)
+    exprs = enumerate_complex_exprs(2)
     shuffle!(rng, exprs)
     train_exprs = exprs[end-length(exprs)÷4+1:end]
     train_data = process_exprs(train_exprs)
@@ -218,7 +219,7 @@ function training()
     test_y = hcat([b[2] for b in test_data]...)
 
     matrix_size = length(instances(MathToken))
-    model, ps, st = create_decoder_transformer()
+    model, ps, st = create_decoder_mlp()
     display(model)
     ps, st = (ps, st) .|> dev
     optim = create_optim(learning_rate, ps)
