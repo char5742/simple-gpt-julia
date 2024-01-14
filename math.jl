@@ -91,6 +91,10 @@ function enumerate_complex_exprs(depth::Int)
     return exprs
 end
 
+push_num = 2
+"enumerate_complex_exprsの生成数を計算"
+O(depth) = depth == 0 ? 10 : length(operators) * push_num * O(depth − 1)^2
+
 """
 全ての単純な式を列挙する
 
